@@ -1,11 +1,10 @@
-"""EKZ tariff API client (Public + myEKZ)."""
+"""EKZ tariff API client (myEKZ OAuth2)."""
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import datetime
 from typing import Any, Final
 
-import asyncio
 import aiohttp
 from aiohttp import ClientError
 
@@ -26,38 +25,12 @@ class EkzTariffAuthError(EkzTariffApiError):
 class EkzTariffApi:
     BASE_URL: Final[str] = "https://api.tariffs.ekz.ch/v1"
     CHF_PER_KWH_UNITS: Final[set[str]] = {"CHF_kWh", "CHF/kWh"}
-    CHF_PER_MONTH_UNITS: Final[set[str]] = {"CHF_m", "CHF/month", "CHF_month"}
-    IGNORED_COMPONENT_KEYS: Final[set[str]] = {"feed_in", "refund_storage"}
 
     def __init__(self, session: aiohttp.ClientSession, oauth_session: OAuth2Session | None = None) -> None:
         self._session = session
         self._oauth_session = oauth_session
 
-    async def fetch_public_tariff(
-        self,
-        tariff_name: str,
-        start: datetime | None = None,
-        end: datetime | None = None,
-    ) -> dict[str, Any]:
-        params: dict[str, Any] = {"tariff_name": tariff_name}
-        if start is not None and end is not None:
-            params["start_timestamp"] = start.isoformat()
-            params["end_timestamp"] = end.isoformat()
-
-        url = f"{self.BASE_URL}/tariffs"
-        _LOGGER.debug("EKZ GET %s params=%s", url, params)
-        async with self._session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-            text = await resp.text()
-            _LOGGER.debug("public tariffs status=%s body=%s", resp.status, text[:2000])
-            resp.raise_for_status()
-            payload: Any = await resp.json()
-
-        if not isinstance(payload, dict):
-            raise ValueError(f"Unexpected EKZ public payload: {payload!r}")
-        prices = payload.get("prices")
-        if not isinstance(prices, list):
-            raise ValueError(f"Unexpected EKZ public payload shape, missing 'prices': {payload!r}")
-        return payload
+    # -- Token management --
 
     # Keycloak error strings that indicate the refresh token is genuinely invalid
     _AUTH_ERROR_KEYWORDS: frozenset = frozenset({
@@ -75,15 +48,12 @@ class EkzTariffApi:
         except ConfigEntryAuthFailed:
             raise
         except aiohttp.ClientResponseError as err:
-            # 400/401 from token endpoint may be a real auth error
             if err.status in (400, 401):
                 _LOGGER.warning("EKZ token refresh HTTP %s – reauthentication required", err.status)
                 raise ConfigEntryAuthFailed(f"EKZ token refresh HTTP {err.status}") from err
-            # 5xx or other HTTP errors are transient – coordinator will retry
             _LOGGER.warning("EKZ token refresh transient HTTP %s (will retry)", err.status)
             raise EkzTariffApiError(f"EKZ token refresh transient failure: {err}") from err
         except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-            # Network / timeout errors are never auth failures
             _LOGGER.warning("EKZ token refresh network error (will retry): %s", err)
             raise EkzTariffApiError(f"EKZ token refresh network error: {err}") from err
         except Exception as err:
@@ -91,7 +61,6 @@ class EkzTariffApi:
             if any(kw in msg for kw in self._AUTH_ERROR_KEYWORDS):
                 _LOGGER.warning("EKZ token genuinely invalid – reauthentication required: %s", err)
                 raise ConfigEntryAuthFailed(f"EKZ token invalid: {err}") from err
-            # Unknown error – treat as transient to avoid false re-auth notifications
             _LOGGER.warning("EKZ token refresh unexpected error (treating as transient): %s", err)
             raise EkzTariffApiError(f"EKZ token refresh failed: {err}") from err
 
@@ -101,6 +70,8 @@ class EkzTariffApi:
             raise ConfigEntryAuthFailed("EKZ OAuth token missing access_token")
         _LOGGER.debug("EKZ access token OK, expires_in=%s", token.get("expires_in"))
         return access_token
+
+    # -- API calls --
 
     async def fetch_ems_link_status(self, *, ems_instance_id: str, redirect_uri: str) -> dict[str, Any]:
         access_token = await self._async_get_access_token()
@@ -116,7 +87,7 @@ class EkzTariffApi:
                 if resp.status >= 400:
                     raise EkzTariffApiError(f"EKZ API error {resp.status}: {text}")
                 data: Any = await resp.json()
-                _LOGGER.debug("emsLinkStatus parsed payload=%r", data)
+                _LOGGER.debug("emsLinkStatus payload=%r", data)
         except ClientError as err:
             raise EkzTariffApiError(f"HTTP error calling emsLinkStatus: {err}") from err
 
@@ -132,6 +103,7 @@ class EkzTariffApi:
         start_timestamp: str | None = None,
         end_timestamp: str | None = None,
     ) -> dict[str, Any]:
+        """Fetch customer tariffs. Returns dict with 'prices' list and 'publication_timestamp'."""
         access_token = await self._async_get_access_token()
         url = f"{self.BASE_URL}/customerTariffs"
         params: dict[str, str] = {"ems_instance_id": ems_instance_id}
@@ -156,8 +128,7 @@ class EkzTariffApi:
         except ClientError as err:
             raise EkzTariffApiError(f"HTTP error calling customerTariffs: {err}") from err
 
-        _LOGGER.debug("customerTariffs parsed payload=%r", data)
-
+        # Normalize response shape
         if isinstance(data, list):
             return {"prices": [x for x in data if isinstance(x, dict)], "publication_timestamp": None}
 
@@ -177,74 +148,58 @@ class EkzTariffApi:
 
         raise EkzTariffApiError(f"Unexpected customerTariffs payload: {data!r}")
 
-    @classmethod
-    def _sum_list_unit(cls, val: Any, allowed_units: set[str]) -> float | None:
-        if not isinstance(val, list):
-            return None
-        total = 0.0
-        found = False
-        for entry in val:
-            if not isinstance(entry, dict):
-                continue
-            unit = entry.get("unit")
-            if not isinstance(unit, str) or unit not in allowed_units:
-                continue
-            v = entry.get("value")
-            if isinstance(v, (int, float)):
-                total += float(v)
-                found = True
-        return total if found else None
+    async def fetch_public_tariffs(
+        self,
+        *,
+        tariff_name: str,
+        start_timestamp: str,
+        end_timestamp: str,
+    ) -> dict[str, Any]:
+        """Fetch public tariffs (no auth). Returns dict with 'prices' list and 'publication_timestamp'."""
+        url = f"{self.BASE_URL}/tariffs"
+        params = {
+            "tariff_name": tariff_name,
+            "start_timestamp": start_timestamp,
+            "end_timestamp": end_timestamp,
+        }
+        headers = {"Accept": "application/json"}
 
-    @classmethod
-    def parse_components_chf_per_kwh(cls, price_item: dict[str, Any]) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for key, val in price_item.items():
-            if key in ("start_timestamp", "end_timestamp", "publication_timestamp"):
-                continue
-            if key in cls.IGNORED_COMPONENT_KEYS:
-                continue
+        try:
+            async with self._session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                text = await resp.text()
+                _LOGGER.debug("public tariffs %s status=%s body=%s", tariff_name, resp.status, text[:600])
+                if resp.status >= 400:
+                    raise EkzTariffApiError(f"EKZ public API error {resp.status}: {text}")
+                data: Any = await resp.json()
+        except ClientError as err:
+            raise EkzTariffApiError(f"HTTP error calling public tariffs: {err}") from err
 
-            s = cls._sum_list_unit(val, cls.CHF_PER_KWH_UNITS)
-            if isinstance(s, (int, float)) and s != 0.0:
-                out[str(key)] = float(s)
-                continue
+        if isinstance(data, dict):
+            prices = data.get("prices")
+            if isinstance(prices, list):
+                return {
+                    "prices": [x for x in prices if isinstance(x, dict)],
+                    "publication_timestamp": data.get("publication_timestamp"),
+                }
 
-            if isinstance(val, dict):
-                unit = val.get("unit")
-                if isinstance(unit, str) and unit in cls.CHF_PER_KWH_UNITS:
-                    v = val.get("value")
-                    if isinstance(v, (int, float)) and float(v) != 0.0:
-                        out[str(key)] = float(v)
-                        continue
+        raise EkzTariffApiError(f"Unexpected public tariffs payload: {data!r}")
 
-            if isinstance(val, (int, float)) and float(val) != 0.0:
-                out[str(key)] = float(val)
+    # -- Helpers --
 
-        return out
-
-    @classmethod
-    def parse_components_chf_per_month(cls, price_item: dict[str, Any]) -> dict[str, float]:
-        out: dict[str, float] = {}
-        for key, val in price_item.items():
-            if key in ("start_timestamp", "end_timestamp", "publication_timestamp"):
-                continue
-            if key in cls.IGNORED_COMPONENT_KEYS:
-                continue
-
-            s = cls._sum_list_unit(val, cls.CHF_PER_MONTH_UNITS)
-            if isinstance(s, (int, float)) and s != 0.0:
-                out[str(key)] = float(s)
-                continue
-
-            if isinstance(val, dict):
-                unit = val.get("unit")
-                if isinstance(unit, str) and unit in cls.CHF_PER_MONTH_UNITS:
-                    v = val.get("value")
-                    if isinstance(v, (int, float)) and float(v) != 0.0:
-                        out[str(key)] = float(v)
-                        continue
-
-            if isinstance(val, (int, float)) and float(val) != 0.0:
-                out[str(key)] = float(val)
-
-        return out
+    @staticmethod
+    def extract_chf_per_kwh(val: Any) -> float | None:
+        """Extract CHF/kWh value from a component field (scalar, dict, or list)."""
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, list):
+            for entry in val:
+                if isinstance(entry, dict) and entry.get("unit") in ("CHF_kWh", "CHF/kWh"):
+                    v = entry.get("value")
+                    if isinstance(v, (int, float)):
+                        return float(v)
+        if isinstance(val, dict):
+            if val.get("unit") in ("CHF_kWh", "CHF/kWh"):
+                v = val.get("value")
+                if isinstance(v, (int, float)):
+                    return float(v)
+        return None

@@ -1,31 +1,10 @@
-force_refresh:
-  name: Force refresh
-  description: Manually fetch tomorrow's tariffs, validate, and signal Tariff Saver.
-
-update_setting:
-  name: Update setting
-  description: Update an EKZ Tariff configuration setting.
-  fields:
-    key:
-      name: Key
-      description: Setting key name
-      required: true
-      selector:
-        text:
-    value:
-      name: Value
-      description: New value for the setting
-      required: true
-      selector:
-        text:
-
 clear_activity_log:
   name: Clear activity log
-  description: Clear all EKZ Tariff activity log entries.
+  description: Clear all EKZ Tariff activity log entries
 
 delete_activity_log_entry:
   name: Delete activity log entry
-  description: Delete a single EKZ Tariff activity log entry.
+  description: Delete a single EKZ Tariff activity log entry
   fields:
     index:
       name: Index
@@ -38,7 +17,7 @@ delete_activity_log_entry:
 
 add_activity_log_entry:
   name: Add activity log entry
-  description: Add a test entry to the EKZ Tariff activity log.
+  description: Add a test entry to the EKZ Tariff activity log
   fields:
     icon:
       name: Icon

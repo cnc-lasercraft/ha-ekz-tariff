@@ -1,7 +1,6 @@
-"""Binary sensors for EKZ Tariff error states."""
+"""Binary sensor for EKZ Tariff error state."""
 from __future__ import annotations
 
-from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.binary_sensor import (
@@ -10,13 +9,19 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .coordinator import EkzTariffCoordinator
+
+
+def _device_info(entry: ConfigEntry) -> dict[str, Any]:
+    return {
+        "identifiers": {(DOMAIN, entry.entry_id)},
+        "name": entry.title,
+        "manufacturer": "EKZ",
+        "model": "Tariff API",
+    }
 
 
 async def async_setup_entry(
@@ -24,92 +29,46 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up EKZ Tariff binary sensors."""
-    coordinator: EkzTariffCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([
-        EkzTariffErrorBinarySensor(coordinator, entry, "no_data_error", "No data error", "mdi:database-off"),
-        EkzTariffErrorBinarySensor(coordinator, entry, "invalid_data_error", "Invalid data error", "mdi:alert-circle"),
-        EkzTariffErrorBinarySensor(coordinator, entry, "auth_error", "Auth error", "mdi:key-alert"),
-        EkzTariffErrorBinarySensor(coordinator, entry, "baseline_error", "Baseline error", "mdi:chart-line-variant"),
-        EkzTariffDateValidBinarySensor(coordinator, entry, 0, "Today data valid", "mdi:calendar-today"),
-        EkzTariffDateValidBinarySensor(coordinator, entry, 1, "Tomorrow data valid", "mdi:calendar-arrow-right"),
-    ], update_before_add=False)
+    sensor = EkzTariffErrorSensor(entry)
+    # Register so __init__.py can call set_error()
+    hass.data[DOMAIN][f"{entry.entry_id}_error_sensor"] = sensor
+    async_add_entities([sensor], update_before_add=False)
 
 
-class EkzTariffErrorBinarySensor(CoordinatorEntity[EkzTariffCoordinator], BinarySensorEntity):
-    """Binary sensor that reflects an error flag on the coordinator."""
+class EkzTariffErrorSensor(BinarySensorEntity):
+    """ON when EKZ Tariff failed to fetch valid data after max retries."""
 
     _attr_has_entity_name = True
+    _attr_name = "Error"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:alert-circle"
 
-    def __init__(
-        self,
-        coordinator: EkzTariffCoordinator,
-        entry: ConfigEntry,
-        flag_name: str,
-        name: str,
-        icon: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._flag_name = flag_name
-        self._attr_name = name
-        self._attr_icon = icon
-        self._attr_unique_id = f"{entry.entry_id}_{flag_name}"
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_error"
+        self._attr_device_info = _device_info(entry)
+        self._error_state: dict[str, Any] | None = None
+
+    @callback
+    def set_error(self, error_state: dict[str, Any] | None) -> None:
+        """Update error state and write to HA. Called from __init__.py."""
+        self._error_state = error_state
+        if self.hass:
+            self.async_write_ha_state()
 
     @property
     def is_on(self) -> bool:
-        """Return True if the error flag is set."""
-        return getattr(self.coordinator, self._flag_name, False)
-
-
-class EkzTariffDateValidBinarySensor(CoordinatorEntity[EkzTariffCoordinator], BinarySensorEntity):
-    """Binary sensor that reflects date-based data validity (problem = invalid data)."""
-
-    _attr_has_entity_name = True
-    _attr_device_class = BinarySensorDeviceClass.PROBLEM
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-
-    def __init__(
-        self,
-        coordinator: EkzTariffCoordinator,
-        entry: ConfigEntry,
-        day_offset: int,
-        name: str,
-        icon: str,
-    ) -> None:
-        super().__init__(coordinator)
-        self._day_offset = day_offset
-        self._attr_name = name
-        self._attr_icon = icon
-        suffix = "today_data_valid" if day_offset == 0 else "tomorrow_data_valid"
-        self._attr_unique_id = f"{entry.entry_id}_{suffix}"
-
-    def _get_target_date(self) -> str:
-        return (dt_util.now().date() + timedelta(days=self._day_offset)).isoformat()
-
-    def _get_validity(self) -> dict[str, Any] | None:
-        return self.coordinator.date_validity.get(self._get_target_date())
-
-    @property
-    def is_on(self) -> bool:
-        """Return True if data for this date is INVALID (problem sensor)."""
-        val = self._get_validity()
-        if val is None:
-            # No validation record yet — not an error
-            return False
-        return not val.get("valid", True)
+        return self._error_state is not None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        val = self._get_validity() or {}
+        if self._error_state is None:
+            return {"error_type": None, "message": None, "retry_count": 0}
         return {
-            "date": self._get_target_date(),
-            "valid": val.get("valid"),
-            "error": val.get("error"),
-            "details": val.get("details"),
-            "slot_count": val.get("slot_count"),
-            "expected_slots": val.get("expected_slots"),
-            "retry_count": val.get("retry_count"),
-            "validated_at": val.get("validated_at"),
+            "error_type": self._error_state.get("error_type"),
+            "message": self._error_state.get("message"),
+            "retry_count": self._error_state.get("retry_count", 0),
+            "last_attempt": self._error_state.get("last_attempt"),
+            "details": self._error_state.get("details"),
         }

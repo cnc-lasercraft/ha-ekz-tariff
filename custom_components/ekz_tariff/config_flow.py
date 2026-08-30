@@ -14,22 +14,18 @@ from homeassistant.helpers import config_entry_oauth2_flow
 from .const import (
     CONF_DEBUG_MODE,
     CONF_MAX_PRICE_CHF_PER_KWH,
-    CONF_MAX_RETRIES_INVALID_DATA,
-    CONF_MAX_RETRIES_NO_DATA,
+    CONF_MAX_RETRIES,
     CONF_MIN_PRICE_CHF_PER_KWH,
-    CONF_MIN_SLOTS_PER_DAY,
     CONF_PUBLISH_TIME,
     CONF_REDIRECT_URI,
     CONF_RETRY_INTERVAL_MINUTES,
     DEFAULT_MAX_PRICE_CHF_PER_KWH,
-    DEFAULT_MAX_RETRIES_INVALID_DATA,
-    DEFAULT_MAX_RETRIES_NO_DATA,
+    DEFAULT_MAX_RETRIES,
     DEFAULT_MIN_PRICE_CHF_PER_KWH,
-    DEFAULT_MIN_SLOTS_PER_DAY,
-    DEFAULT_NAME,
     DEFAULT_PUBLISH_TIME,
     DEFAULT_RETRY_INTERVAL_MINUTES,
     DOMAIN,
+    DEFAULT_NAME,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -188,10 +184,6 @@ class EkzTariffOptionsFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler):
                         default=opts.get(CONF_PUBLISH_TIME, DEFAULT_PUBLISH_TIME),
                     ): str,
                     vol.Optional(
-                        CONF_MIN_SLOTS_PER_DAY,
-                        default=opts.get(CONF_MIN_SLOTS_PER_DAY, DEFAULT_MIN_SLOTS_PER_DAY),
-                    ): vol.Coerce(int),
-                    vol.Optional(
                         CONF_MIN_PRICE_CHF_PER_KWH,
                         default=opts.get(CONF_MIN_PRICE_CHF_PER_KWH, DEFAULT_MIN_PRICE_CHF_PER_KWH),
                     ): vol.Coerce(float),
@@ -200,12 +192,8 @@ class EkzTariffOptionsFlow(config_entry_oauth2_flow.AbstractOAuth2FlowHandler):
                         default=opts.get(CONF_MAX_PRICE_CHF_PER_KWH, DEFAULT_MAX_PRICE_CHF_PER_KWH),
                     ): vol.Coerce(float),
                     vol.Optional(
-                        CONF_MAX_RETRIES_NO_DATA,
-                        default=opts.get(CONF_MAX_RETRIES_NO_DATA, DEFAULT_MAX_RETRIES_NO_DATA),
-                    ): vol.Coerce(int),
-                    vol.Optional(
-                        CONF_MAX_RETRIES_INVALID_DATA,
-                        default=opts.get(CONF_MAX_RETRIES_INVALID_DATA, DEFAULT_MAX_RETRIES_INVALID_DATA),
+                        CONF_MAX_RETRIES,
+                        default=opts.get(CONF_MAX_RETRIES, DEFAULT_MAX_RETRIES),
                     ): vol.Coerce(int),
                     vol.Optional(
                         CONF_RETRY_INTERVAL_MINUTES,

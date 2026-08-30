@@ -54,3 +54,23 @@
 - **customerTariffs** für 29.3.2026: liefert 97 Slots (92 für 29.3. + 5 Überlauf für 30.3.)
 - **Auswirkung:** Validator filtert korrekt nach Zieldatum, Überlauf-Slots werden ignoriert
 - **Status:** KEIN PROBLEM — Validator handhabt dies korrekt
+
+## 7. No-Data-Tage: API liefert gar keine Slots für den Folgetag
+
+- **Entdeckt:** 2026-08-01 (1. Vorfall), bestätigt 2026-08-12/13 (2. Vorfall)
+- **Beobachtung:** Daily Fetch 18:15 + 4 Retries → `no_data` für den Folgetag. Am 12.08. für den 13.08.; auch manueller `ekz_tariff.fetch_date` am Folgemorgen (13.08. ~09:30) lieferte noch "Keine Slots".
+- **Kein Feiertags-Muster:** 01.08. war Feiertag, 13.08. (Mi) nicht — These widerlegt.
+- **Auswirkung:** Betroffener Tag läuft komplett ohne Preisdaten. Tariff Saver invalidiert Pläne (`error_no_data`, seit 02.05.). Ladeempfehlung (EV-Ladeermahnung) kann an solchen Tagen strukturell nie ON werden (Tarif-Fenster UND `pv_kw`-Mapping hängen an den Slots).
+- **Update 2026-08-13 abends:** 2. Tag in Folge — auch Fetch für 14.08. leer (4 Retries + `test_fetch` 23:13). Debug-Dump zeigt: Request identisch zum letzten Erfolg (11.08.), Antwort ist **HTTP-ok mit `"prices": []`** + publication_timestamp — kein Auth-/Request-Fehler. Public API (`/v1/tariffs`, ohne Auth) liefert ebenfalls `{"prices":[]}` für 13./14.08. → **EKZ publiziert seit 12.08. serverseitig keine dynamischen Preise.** Letzter publizierter Tag: 12.08. (geliefert 11.08. 18:15).
+- **Update 2026-08-15:** Publikation kam am 14.08. 18:15 **von selbst zurück** (96 Slots für 15.08. validiert, kein Eingriff nötig). Dauer der Störung: 2 Publikationstage (13.+14.08. ohne Daten).
+- **Status:** BEOBACHTEN — EKZ-seitige Publikations-Aussetzer, bisher 3 No-Data-Tage in 2 Wochen (01.08., 13.08., 14.08.), heilen sich bislang selbst. Konsequenz in Tariff Saver: Teil-3-Fallback (letzte bekannte Slots als Schätzung) bauen, damit Consumer-Pläne + Ladeermahnung solche Tage überstehen.
+
+## 8. customerTariffs-Endpoint komplett kaputt: 401/500 über mehrere Tage
+
+- **Zeitraum:** 19.08. abends – mind. 24.08.2026 (bei Deploy des Fallbacks noch aktiv)
+- **Symptom:** Täglicher 18:15-Fetch scheiterte 5 Abende in Folge (19.–23.08.) mit `401 Unauthorized` (leerer Body). Tagsüber am 23./24.08. lieferte derselbe Endpoint `500 Internal Server Error` (`/v1/customerTariffs`). Auch `emsLinkStatus` gab 401.
+- **Kein Client-Problem:** Public API (`/v1/tariffs`, ohne Auth) lieferte im selben Zeitraum vollständige 96-Slot-Tage für `electricity_dynamic` UND `grid_400d`. OAuth-Token-Refresh lief fehlerfrei durch (kein Keycloak-Fehler) — der 401 kam vom API-Backend, nicht vom Auth-Server.
+- **Verstärker im alten Code:** `EkzTariffAuthError` führte zu `raise ConfigEntryAuthFailed` OHNE Retry (retry_count blieb 0) — bereits der Link-Status-Check (Schritt 1) beendete den Abend. Seit 2026-08-24 gefixt: Link-Status-401 nur noch Log, Fetch-Auth-Fehler bekommen normale Retries + Public-Fallback.
+- **Auswirkung:** 4 Tage ohne Preisdaten (20.–23.08.), 4 Tage kein automatisches Warmwasser (Boiler auf 30.9 °C). August-Bilanz gesamt: 7 No-Data-Tage (01., 13., 14., 20.–23.).
+- **Preis-Rekonstruktion verifiziert (Basis des Public-Fallbacks):** `customer.electricity == public electricity_dynamic` (exakt, 12/12 Stichproben); `customer.grid == public grid_400d + 0.0276 CHF/kWh` (konstant über alle Stichproben 15./17./18./19.08.); `regional_fees` konstant 0.0016; `integrated = electricity + grid` (ohne regional_fees).
+- **Status:** OFFEN bei EKZ (melden!). Systemseitig seit 2026-08-24 durch Public-API-Fallback entschärft.

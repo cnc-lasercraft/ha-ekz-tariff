@@ -1,9 +1,6 @@
 {
   "domain": "ekz_tariff",
   "name": "EKZ Tariff",
-  "codeowners": [
-    "@cnc-lasercraft"
-  ],
   "dependencies": [
     "application_credentials",
     "auth"
