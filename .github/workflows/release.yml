@@ -1,0 +1,52 @@
+# Release automatisch aus der manifest.json-Version.
+#
+# Warum: HACS installiert NUR GitHub-Releases, nie den Branch-Stand. Ein Versions-Bump ohne
+# Release erreicht keinen einzigen Nutzer — und `git status` meldet dabei völlig zu Recht
+# "alles aktuell", weil ja alles gepusht ist. Genau so hing device-saver 3,5 Monate auf
+# v0.0.11, während der Code bereits bei 0.0.17 war.
+#
+# Ablage: .github/workflows/release.yml im jeweiligen Integrations-Repo.
+# Voraussetzung: custom_components/<domain>/manifest.json mit gepflegtem "version"-Feld.
+# Wirkung: Jeder Push auf main, der die manifest.json anfasst, erzeugt Tag + Release —
+#          aber nur, wenn es den Tag noch nicht gibt (idempotent, kein Doppel-Release).
+
+name: Release on version bump
+
+on:
+  push:
+    branches: [main]
+    paths: ['custom_components/*/manifest.json']
+  workflow_dispatch:        # erlaubt das manuelle Nachziehen eines vergessenen Releases
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0    # Tags werden gebraucht, sonst schlägt die Existenzprüfung fehl
+
+      - name: Version aus manifest.json lesen
+        id: manifest
+        run: |
+          version=$(jq -r '.version' custom_components/*/manifest.json | head -1)
+          if [ -z "$version" ] || [ "$version" = "null" ]; then
+            echo "::error::Kein version-Feld in custom_components/*/manifest.json"
+            exit 1
+          fi
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Release erstellen, falls der Tag fehlt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.manifest.outputs.tag }}
+        run: |
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "$TAG existiert bereits — nichts zu tun."
+            exit 0
+          fi
+          gh release create "$TAG" --title "$TAG" --generate-notes
+          echo "Release $TAG erstellt."
