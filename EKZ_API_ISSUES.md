@@ -74,3 +74,12 @@
 - **Auswirkung:** 4 Tage ohne Preisdaten (20.–23.08.), 4 Tage kein automatisches Warmwasser (Boiler auf 30.9 °C). August-Bilanz gesamt: 7 No-Data-Tage (01., 13., 14., 20.–23.).
 - **Preis-Rekonstruktion verifiziert (Basis des Public-Fallbacks):** `customer.electricity == public electricity_dynamic` (exakt, 12/12 Stichproben); `customer.grid == public grid_400d + 0.0276 CHF/kWh` (konstant über alle Stichproben 15./17./18./19.08.); `regional_fees` konstant 0.0016; `integrated = electricity + grid` (ohne regional_fees).
 - **Status:** OFFEN bei EKZ (melden!). Systemseitig seit 2026-08-24 durch Public-API-Fallback entschärft.
+
+## 9. Teillieferung: customerTariffs gibt 8 statt 96 Slots — Fallback greift nicht
+
+- **Entdeckt:** 2026-09-01 (Fetch vom 31.08. 18:15 für den 01.09.); dasselbe Muster schon am 01.05.2026 (8/96 Slots für den 01.05.)
+- **Symptom:** `customerTariffs` antwortet HTTP-ok mit einem **unvollständigen** Tag — 8 Slots (2 h) statt 96. Alle 4 Retries (18:15/18:30/18:45/19:00) liefern exakt dieselben 8 Slots. Validator verwirft korrekt (`insufficient_slots`), Ergebnis ist ein kompletter No-Data-Tag.
+- **Public API war vollständig:** `/v1/tariffs` hatte für den 01.09. **96 Slots** `electricity_dynamic` + 96 `grid_400d`, `publication_timestamp` 31.08. **17:49** — also 26 Minuten VOR dem 18:15-Fetch. Die Daten waren da, nur die Kunden-API gab sie nicht heraus.
+- **Lücke im Fallback (bis 2026-09-01):** Der Public-Fallback hing an `if not parsed_slots` — er sprang nur bei einer *leeren* Antwort an. 8 Slots sind „truthy", also wurde der Fallback übersprungen und die Teillieferung lief ungebremst in die Validierung. Betraf `_do_fetch_and_process` **und** das Recovery-Werkzeug `fetch_date`, d.h. der Tag liess sich auch von Hand nicht mehr retten.
+- **Fix 2026-09-01:** Neuer Helper `_apply_public_fallback()` — der Fallback greift, sobald die Kunden-API **weniger als die DST-erwartete Slotzahl** liefert (`validator.expected_slots_for_date`, 96/92/100), und wird nur übernommen, wenn er mehr Slots bringt als die Kunden-API. Eine Teillieferung ist genauso wertlos wie gar keine — beide scheitern an der Validierung.
+- **Status:** OFFEN bei EKZ (zusammen mit Issue 8 melden). Systemseitig seit 2026-09-01 abgedeckt.

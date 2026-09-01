@@ -47,7 +47,7 @@ from .const import (
     EVENT_EKZ_NEW_DATA,
     PLATFORMS,
 )
-from .validator import validate_tomorrow_slots
+from .validator import expected_slots_for_date, validate_tomorrow_slots
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -333,6 +333,56 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             }
         return result
 
+    def _expected_slot_count(target_date) -> int:
+        """Soll-Slotzahl für einen Tag (DST-aware: 96 normal, 92 Frühling, 100 Herbst)."""
+        return expected_slots_for_date(target_date, dt_util.get_time_zone(hass.config.time_zone))
+
+    async def _apply_public_fallback(
+        target_date, parsed_slots: dict[str, dict[str, float]], label: str = ""
+    ) -> tuple[dict[str, dict[str, float]], bool]:
+        """Public-Fallback ziehen, wenn die Kunden-API nichts ODER zu wenig lieferte.
+
+        EKZ liefert gelegentlich Teiltage (01.05. und 01.09.2026 je 8 statt 96 Slots).
+        Eine unvollständige Lieferung scheitert später an der Validierung und ist
+        damit genauso wertlos wie gar keine — der Fallback muss auch dann greifen.
+        Übernommen wird der Fallback nur, wenn er mehr Slots bringt als die Kunden-API.
+        """
+        expected = _expected_slot_count(target_date)
+        if len(parsed_slots) >= expected or not _is_public_fallback_enabled():
+            return parsed_slots, False
+
+        prefix = f"{label} " if label else ""
+        if parsed_slots:
+            log_activity(
+                "🌐",
+                f"{prefix}Kunden-API unvollständig ({len(parsed_slots)}/{expected} Slots "
+                f"für {target_date}) — Public-Fallback wird versucht",
+            )
+        try:
+            fb_slots = await _fetch_public_fallback_slots(target_date)
+        except Exception as fb_err:
+            log_activity("🌐", f"{prefix}Public-Fallback fehlgeschlagen: {fb_err}")
+            _LOGGER.warning("EKZ public fallback failed: %s", fb_err)
+            return parsed_slots, False
+
+        if not fb_slots:
+            log_activity("🌐", f"{prefix}Public-Fallback: keine Slots für {target_date}")
+            return parsed_slots, False
+        if len(fb_slots) <= len(parsed_slots):
+            log_activity(
+                "🌐",
+                f"{prefix}Public-Fallback nicht besser ({len(fb_slots)} statt "
+                f"{len(parsed_slots)} Slots) — Kunden-Daten behalten",
+            )
+            return parsed_slots, False
+
+        log_activity(
+            "🌐",
+            f"{prefix}Public-API-Fallback: {len(fb_slots)}/{expected} Slots "
+            f"für {target_date} rekonstruiert",
+        )
+        return fb_slots, True
+
     # ---------------------------------------------------------------------------
     #  Core: fetch and process
     # ---------------------------------------------------------------------------
@@ -406,20 +456,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not parsed_slots:
                 log_activity("⚠️", f"Keine Slots für {tomorrow}")
 
-        # 4b. Public-API-Fallback (Kunden-API down oder leer)
-        if not parsed_slots and _is_public_fallback_enabled():
-            try:
-                fb_slots = await _fetch_public_fallback_slots(tomorrow)
-            except Exception as fb_err:
-                log_activity("🌐", f"Public-Fallback fehlgeschlagen: {fb_err}")
-                _LOGGER.warning("EKZ public fallback failed: %s", fb_err)
-            else:
-                if fb_slots:
-                    parsed_slots = fb_slots
-                    used_fallback = True
-                    log_activity("🌐", f"Public-API-Fallback: {len(fb_slots)} Slots für {tomorrow} rekonstruiert")
-                else:
-                    log_activity("🌐", f"Public-Fallback: keine Slots für {tomorrow}")
+        # 4b. Public-API-Fallback (Kunden-API down, leer ODER unvollständig)
+        parsed_slots, used_fallback = await _apply_public_fallback(tomorrow, parsed_slots)
 
         if not parsed_slots:
             retry_state["count"] += 1
@@ -615,13 +653,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             payload = await api.fetch_customer_tariffs(**request_params)
             parsed = _parse_customer_slots(payload)
             await _write_debug_dump("test_fetch", request_params, payload, len(parsed))
-            log_activity("🧪", f"Test-Fetch: {len(parsed)} Slots für {tomorrow}")
+            log_activity("🧪", f"Test-Fetch: {len(parsed)}/{_expected_slot_count(tomorrow)} Slots für {tomorrow}")
         except Exception as err:
             log_activity("🧪", f"Test-Fetch FEHLER: {err}")
         # Public-Fallback mittesten (nur Log, kein Systemeingriff)
         try:
             fb = await _fetch_public_fallback_slots(tomorrow)
-            log_activity("🧪", f"Test Public-Fallback: {len(fb)} Slots für {tomorrow}")
+            log_activity("🧪", f"Test Public-Fallback: {len(fb)}/{_expected_slot_count(tomorrow)} Slots für {tomorrow}")
         except Exception as fb_err:
             log_activity("🧪", f"Test Public-Fallback FEHLER: {fb_err}")
 
@@ -705,15 +743,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             last_api_success_utc = dt_util.utcnow().isoformat()
             await _write_debug_dump("fetch_date", request_params, payload, len(parsed_slots))
 
-        if not parsed_slots and _is_public_fallback_enabled():
-            try:
-                parsed_slots = await _fetch_public_fallback_slots(target)
-            except Exception as fb_err:
-                log_activity("🌐", f"fetch_date Public-Fallback fehlgeschlagen: {fb_err}")
-            else:
-                if parsed_slots:
-                    used_fallback = True
-                    log_activity("🌐", f"fetch_date Public-Fallback: {len(parsed_slots)} Slots rekonstruiert")
+        parsed_slots, used_fallback = await _apply_public_fallback(target, parsed_slots, "fetch_date")
 
         if not parsed_slots:
             log_activity("⚠️", f"fetch_date: Keine Slots für {target}")

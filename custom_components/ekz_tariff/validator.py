@@ -48,7 +48,7 @@ def _slot_total_price(components: dict[str, float]) -> float | None:
     return None
 
 
-def _expected_slots_for_date(target_date: date, tz: tzinfo) -> int:
+def expected_slots_for_date(target_date: date, tz: tzinfo) -> int:
     """Calculate expected number of 15-min slots for a date, accounting for DST.
 
     Normal day: 96 (24h × 4)
@@ -99,7 +99,7 @@ def validate_tomorrow_slots(
     4. Check for gaps (all expected 15-min timestamps present)
     5. Check every slot price within [min_price, max_price]
     """
-    expected = _expected_slots_for_date(target_date, tz)
+    expected = expected_slots_for_date(target_date, tz)
     # Use the lesser of configured min_slots and DST-adjusted expected
     required = min(min_slots, expected)
 
