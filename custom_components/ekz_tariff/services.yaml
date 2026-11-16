@@ -1,33 +1,52 @@
+force_refresh:
+  name: Force refresh
+  description: Fetch tomorrow's tariffs now, validate them and signal Tariff Saver.
+
+test_fetch:
+  name: Test fetch
+  description: >-
+    Run the same API call as the daily refresh and write the result to the
+    activity log and the debug dump only. Stored tariffs are not changed and no
+    signal is sent.
+
+fetch_date:
+  name: Fetch date
+  description: >-
+    Fetch and process the tariffs for one specific day and signal Tariff Saver.
+    Recovery tool for a day that was missed.
+  fields:
+    date:
+      name: Date
+      description: The day to fetch.
+      required: true
+      example: "2026-09-01"
+      selector:
+        date:
+
+update_setting:
+  name: Update setting
+  description: Change one EKZ Tariff setting. Used by the settings card.
+  fields:
+    key:
+      name: Key
+      description: >-
+        Name of the setting: publish_time, min_price_chf_per_kwh,
+        max_price_chf_per_kwh, max_retries, retry_interval_minutes, debug_mode,
+        public_fallback_enabled, public_fallback_grid_tariff,
+        public_fallback_grid_offset_chf_per_kwh or
+        public_fallback_regional_fees_chf_per_kwh.
+      required: true
+      example: "max_retries"
+      selector:
+        text:
+    value:
+      name: Value
+      description: New value for the setting (number, true/false or text, depending on the key).
+      required: true
+      example: 4
+      selector:
+        object:
+
 clear_activity_log:
   name: Clear activity log
-  description: Clear all EKZ Tariff activity log entries
-
-delete_activity_log_entry:
-  name: Delete activity log entry
-  description: Delete a single EKZ Tariff activity log entry
-  fields:
-    index:
-      name: Index
-      description: Index of the entry to delete
-      required: true
-      selector:
-        number:
-          min: 0
-          max: 100
-
-add_activity_log_entry:
-  name: Add activity log entry
-  description: Add a test entry to the EKZ Tariff activity log
-  fields:
-    icon:
-      name: Icon
-      description: Emoji icon
-      required: false
-      selector:
-        text:
-    msg:
-      name: Message
-      description: Log message
-      required: true
-      selector:
-        text:
+  description: Clear all EKZ Tariff activity log entries.

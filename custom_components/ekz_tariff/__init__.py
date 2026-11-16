@@ -141,6 +141,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     config = dict(entry.data)
     config.update(dict(entry.options))
 
+    # Zeitzone einmal beim Setup auflösen und wiederverwenden: das Laden kann die
+    # tz-Datenbank von der Platte lesen und gehört nicht synchron in den Event-Loop.
+    local_tz = await dt_util.async_get_time_zone(hass.config.time_zone)
+
     # OAuth session + API client
     session = async_get_clientsession(hass)
     implementation = await config_entry_oauth2_flow.async_get_config_entry_implementation(hass, entry)
@@ -335,7 +339,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     def _expected_slot_count(target_date) -> int:
         """Soll-Slotzahl für einen Tag (DST-aware: 96 normal, 92 Frühling, 100 Herbst)."""
-        return expected_slots_for_date(target_date, dt_util.get_time_zone(hass.config.time_zone))
+        return expected_slots_for_date(target_date, local_tz)
 
     async def _apply_public_fallback(
         target_date, parsed_slots: dict[str, dict[str, float]], label: str = ""
@@ -497,7 +501,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         opts.update(dict(entry.options))
         min_price = float(opts.get(CONF_MIN_PRICE_CHF_PER_KWH, DEFAULT_MIN_PRICE_CHF_PER_KWH))
         max_price = float(opts.get(CONF_MAX_PRICE_CHF_PER_KWH, DEFAULT_MAX_PRICE_CHF_PER_KWH))
-        tz = dt_util.get_time_zone(hass.config.time_zone)
+        tz = local_tz
 
         result = validate_tomorrow_slots(
             stored_slots=parsed_slots,
